@@ -1,0 +1,5 @@
+# Python package dependencies.
+supabase
+strands-agents
+strands-agents-tools
+bedrock-agentcore

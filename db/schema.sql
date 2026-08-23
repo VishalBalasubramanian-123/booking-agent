@@ -1,0 +1,1 @@
+-- Source-of-truth copy of the live Supabase schema.
