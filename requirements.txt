@@ -3,3 +3,5 @@ supabase
 strands-agents
 strands-agents-tools
 bedrock-agentcore
+python-dotenv
+pytest

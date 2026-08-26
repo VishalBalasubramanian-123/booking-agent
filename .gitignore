@@ -1,2 +1,18 @@
-# Standard Python .gitignore, plus .env.
+# Python / virtual env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# secrets
 .env
+
+# macOS
+.DS_Store
+
+# IDE (optional, personal preference)
+.vscode/
+.idea/
