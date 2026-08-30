@@ -13,6 +13,9 @@ __pycache__/
 # macOS
 .DS_Store
 
+# personal notes
+idea.md
+
 # IDE (optional, personal preference)
 .vscode/
 .idea/
