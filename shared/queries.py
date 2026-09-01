@@ -7,6 +7,14 @@ def get_tables(party_size):
     response = supabase.table("tables_info").select("table_id", "table_number").gte("capacity", party_size).execute().data
     return response
 
+def get_closing_time(date):
+    column = "weekend_closing_time" if date.weekday() >= 5 else "weekday_closing_time"
+    response = supabase.table("restaurant_info").select(column).execute().data
+    if not response:
+        return None
+    closing_time = datetime.combine(date, datetime.strptime(response[0][column], "%H:%M:%S").time())
+    return closing_time
+
 
 def get_maintenance_window(table_id, date, time):
     requested_at = datetime.combine(date, time)
@@ -44,7 +52,7 @@ def get_existing_bookings(table_id, date):
         confirmed_declined = reservation["confirmed_declined"]
         end_time_hold_reserve = reservation["end_time_hold_reserve"]
         still_on_hold = (
-            confirmed_declined == "pending" 
+            confirmed_declined == "pending"
             and end_time_hold_reserve is not None
             and now < datetime.fromisoformat(reservation["end_time_hold_reserve"])
         )

@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta
 
 from shared.db import supabase
-from shared.queries import get_existing_bookings, get_maintenance_window, get_tables
+from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time
 from tools_lambda.tools.kb import check_KB as check_KB_tool
 
 # Default table occupancy when the guest doesn't specify how long they're staying.
@@ -48,8 +48,8 @@ def check_availability(date, time, party_size, table_number=None, stay_minutes=N
         # Step 2: Maintenance — its own check, own data source, never merged with booking status
         maintenance_window = get_maintenance_window(table_id, date, time)
         if maintenance_window:
-            results.append(
-                {"table": table, "available": False, "reason": "maintenance", "window": maintenance_window}
+            results.extend(
+                [{"table": table, "available": False, "reason": w["reason"], "window": [datetime.fromisoformat(w["start_time"]), datetime.fromisoformat(w["end_time"])]} for w in maintenance_window]
             )
             continue
 
@@ -74,7 +74,7 @@ def check_availability(date, time, party_size, table_number=None, stay_minutes=N
         sorted_bookings = sorted(bookings, key=lambda b: b["time"])
         next_free_start = _find_next_free_start(requested_start, occupancy_time, sorted_bookings)
 
-        closing_time = check_KB_tool("closing_hours", date)
+        closing_time = get_closing_time(date)
 
         if next_free_start is not None and next_free_start + occupancy_time <= closing_time:
             results.append({"table": table, "available": False, "next_available_time": next_free_start})
@@ -84,9 +84,9 @@ def check_availability(date, time, party_size, table_number=None, stay_minutes=N
             for day_offset in (1, 2):
                 next_date = date + timedelta(days=day_offset)
                 next_day_bookings = get_existing_bookings(table_id, next_date)
-                next_day_closing = check_KB_tool("closing_hours", next_date)
+                next_day_closing = get_closing_time(next_date)
                 sorted_next_day_bookings = sorted(next_day_bookings, key=lambda b: b["time"])
-                computed_time = _find_next_free_start(requested_start, occupancy_time, sorted_next_day_bookings)
+                computed_time = _find_next_free_start(datetime.combine(next_date, time), occupancy_time, sorted_next_day_bookings)
                 if computed_time is not None and computed_time + occupancy_time <= next_day_closing:
                     alt_slots.append((next_date, computed_time))
             results.append({"table": table, "available": False, "alternatives": alt_slots})
