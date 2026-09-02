@@ -109,4 +109,123 @@ def test_check_availability_when_conflicting():
     patch("tools_lambda.tools.booking.get_closing_time", return_value=datetime.fromisoformat("2026-08-28T23:00:00")):
         result = check_availability(date(2026, 8, 28), time(19, 0), party_size=2)
     assert result == [{"table": 5, "available": False, "next_available_time": datetime.fromisoformat("2026-08-28T20:00:00")}]
-    
+
+
+
+def fake_get_existing_bookings(table_id, requested_date):
+    if requested_date == date(2026, 8, 28):
+        return [{
+            "table_number": 5,
+            "time": datetime.fromisoformat("2026-08-28T21:00:00"),
+            "occupancy_end_time": datetime.fromisoformat("2026-08-28T22:00:00"),
+        }]
+    return []
+
+
+def fake_get_closing_time(requested_date):
+    if requested_date == date(2026, 8, 28):
+        return datetime.fromisoformat("2026-08-28T22:00:00")
+    if requested_date == date(2026, 8, 29):
+        return datetime.fromisoformat("2026-08-29T23:00:00")
+    return datetime.fromisoformat("2026-08-30T23:00:00")
+
+
+def test_check_availability_when_alternatives_found_next_two_days():
+    with patch("tools_lambda.tools.booking.get_tables", return_value=[{"table_id": 3, "table_number": 5}]), \
+    patch("tools_lambda.tools.booking.get_maintenance_window", return_value=[]), \
+    patch("tools_lambda.tools.booking.get_existing_bookings", side_effect=fake_get_existing_bookings), \
+    patch("tools_lambda.tools.booking.get_closing_time", side_effect=fake_get_closing_time):
+        result = check_availability(date(2026, 8, 28), time(21, 0), party_size=2)
+    assert result == [{
+        "table": 5,
+        "available": False,
+        "alternatives": [
+            (date(2026, 8, 29), datetime.fromisoformat("2026-08-29T21:00:00")),
+            (date(2026, 8, 30), datetime.fromisoformat("2026-08-30T21:00:00")),
+        ],
+    }]
+
+def fake_get_existing_bookings_noalt(table_id, requested_date):
+    if requested_date == date(2026, 8, 28):
+        return [{
+            "table_number": 5,
+            "time": datetime.fromisoformat("2026-08-28T21:00:00"),
+            "occupancy_end_time": datetime.fromisoformat("2026-08-28T22:00:00"),
+        }]
+    return []
+
+
+def fake_get_closing_time_noalt(requested_date):
+    if requested_date == date(2026, 8, 28):
+        return datetime.fromisoformat("2026-08-28T22:00:00")
+    if requested_date == date(2026, 8, 29):
+        return datetime.fromisoformat("2026-08-29T22:00:00")
+    return datetime.fromisoformat("2026-08-30T22:00:00")
+
+def test_check_availability_when_no_alternatives():
+    with patch("tools_lambda.tools.booking.get_tables", return_value=[{"table_id": 3, "table_number": 5}]), \
+    patch("tools_lambda.tools.booking.get_maintenance_window", return_value=[]), \
+    patch("tools_lambda.tools.booking.get_existing_bookings", side_effect=fake_get_existing_bookings_noalt), \
+    patch("tools_lambda.tools.booking.get_closing_time", side_effect=fake_get_closing_time_noalt):
+        result = check_availability(date(2026, 8, 28), time(21, 0), party_size=2)
+    assert result == [{
+        "table": 5,
+        "available": False,
+        "alternatives": [],
+    }]
+
+def fake_get_existing_bookings_step6(table_id, requested_date):
+    if table_id == 3:  # table 5 (requested): no bookings at all -> available
+        return []
+    if table_id == 7:  # table 8: conflicts today, but a same-day slot fits before closing
+        if requested_date == date(2026, 8, 28):
+            return [{
+                "table_number": 8,
+                "time": datetime.fromisoformat("2026-08-28T20:30:00"),
+                "occupancy_end_time": datetime.fromisoformat("2026-08-28T22:00:00"),
+            }]
+        return []
+    if table_id == 9:  # table 12: conflicts today, next slot doesn't fit -> lookahead finds alternatives
+        if requested_date == date(2026, 8, 28):
+            return [{
+                "table_number": 12,
+                "time": datetime.fromisoformat("2026-08-28T21:00:00"),
+                "occupancy_end_time": datetime.fromisoformat("2026-08-28T23:00:00"),
+            }]
+        return []  # Aug 29/30 wide open
+
+
+def fake_get_closing_time_step6(requested_date):
+    # restaurant-wide closing time -- same for every table on a given date
+    if requested_date == date(2026, 8, 28):
+        return datetime.fromisoformat("2026-08-28T23:30:00")
+    if requested_date == date(2026, 8, 29):
+        return datetime.fromisoformat("2026-08-29T23:00:00")
+    return datetime.fromisoformat("2026-08-30T23:00:00")
+
+
+def test_check_availability_when_table_given():
+    with patch("tools_lambda.tools.booking.get_tables", return_value=[
+            {"table_id": 3, "table_number": 5},
+            {"table_id": 7, "table_number": 8},
+            {"table_id": 9, "table_number": 12},
+        ]), \
+    patch("tools_lambda.tools.booking.get_maintenance_window", return_value=[]), \
+    patch("tools_lambda.tools.booking.get_existing_bookings", side_effect=fake_get_existing_bookings_step6), \
+    patch("tools_lambda.tools.booking.get_closing_time", side_effect=fake_get_closing_time_step6):
+        result = check_availability(date(2026, 8, 28), time(21, 0), table_number=5, party_size=2)
+    assert result == {
+        "requested_table": {
+            "table": 5,
+            "available": True,
+            "date": date(2026, 8, 28),
+            "time": time(21, 0),
+        },
+        "alternative_tables": [
+            {
+                "table": 8,
+                "available": False,
+                "next_available_time": datetime.fromisoformat("2026-08-28T22:00:00"),
+            },
+        ],
+    }
