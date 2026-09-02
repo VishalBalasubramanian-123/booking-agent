@@ -83,6 +83,8 @@ def check_availability(date, time, party_size, table_number=None, stay_minutes=N
             alt_slots = []
             for day_offset in (1, 2):
                 next_date = date + timedelta(days=day_offset)
+                if get_maintenance_window(table_id, next_date, time):
+                    continue
                 next_day_bookings = get_existing_bookings(table_id, next_date)
                 next_day_closing = get_closing_time(next_date)
                 sorted_next_day_bookings = sorted(next_day_bookings, key=lambda b: b["time"])
