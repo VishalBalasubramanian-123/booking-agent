@@ -1,8 +1,8 @@
 # verification_to_human, decision_to_human, reserve_table, check_booking.
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, time
 
 from shared.db import supabase
-from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time
+from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time, get_booking_status , update_status
 from tools_lambda.tools.kb import check_KB as check_KB_tool
 
 # Default table occupancy when the guest doesn't specify how long they're staying.
@@ -110,7 +110,21 @@ def reserve_table(date, time, party_size, name, phone, email, table_number=None)
 
 
 def check_booking(booking_id):
-    pass
+    current_status = get_booking_status(booking_id)
+
+    if current_status:
+        response = {
+            "session_id": current_status[0]["session_id"],
+            "status": current_status[0]["confirmed_declined"],
+            "party": current_status[0]["party_size"],
+            "date": date.fromisoformat(current_status[0]["date"]),
+            "time": time.fromisoformat(current_status[0]["time"]),
+            "allergy_information": current_status[0]["allergy_info"],
+            "total_time": datetime.fromisoformat(current_status[0]["occupancy_end_time"]) - datetime.combine(date.fromisoformat(current_status[0]["date"]), time.fromisoformat(current_status[0]["time"]))
+        }
+        return response
+    else:
+        return None
 
 
 def verification_to_human(booking_id, reason):
@@ -120,5 +134,27 @@ def verification_to_human(booking_id, reason):
 def decision_to_human(booking_id, decision):
     pass
 
-def cancel_booking(booking_id):
-    pass
+def cancel_booking(booking_id, reason):
+    check_status = check_booking(booking_id)
+
+    if check_status is None:
+        return "Booking not found."
+    if check_status["status"].lower() in ["pending", "declined", "cancelled"]:
+        return f"Cannot be cancelled as the booking has been {check_status['status']}"
+
+    cancellation = update_status(check_status["session_id"], booking_id, reason)
+
+    result = {
+        "session_id": cancellation[0]["session_id"],
+        "booking_id": cancellation[0]["reservation_id"],
+        "status": cancellation[0]["confirmed_declined"],
+        "message": f"Your booking has been cancelled and the reason is {cancellation[0]['reason']}"
+    }
+
+    return result
+
+
+def _bucket_gate(allergy_info):
+    if allergy_info:
+        return "bucket 2"
+    return "bucket 1"
