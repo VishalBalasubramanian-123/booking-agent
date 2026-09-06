@@ -1,5 +1,5 @@
 # Tests for the agent's system prompt and Agent construction.
-from tools_lambda.tools.booking import _windows_overlap, _find_next_free_start, check_availability
+from tools_lambda.tools.booking import _windows_overlap, _find_next_free_start, check_availability, check_booking, cancel_booking, _bucket_gate
 from unittest.mock import patch
 import pytest
 from datetime import datetime, date, time, timedelta
@@ -229,3 +229,48 @@ def test_check_availability_when_table_given():
             },
         ],
     }
+
+def test_check_booking_when_records_present():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "pending", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]):
+        result = check_booking(2)
+    assert result == {
+            "session_id": 1,
+            "status": "pending",
+            "party": 4,
+            "date": date.fromisoformat("2026-08-28"),
+            "time": time.fromisoformat("12:00:00"),
+            "allergy_information": "Peanut allergy",
+            "total_time": datetime.fromisoformat("2026-08-28T13:30:00") - datetime.combine(date.fromisoformat("2026-08-28"), time.fromisoformat("12:00:00"))
+        }
+
+def test_check_booking_when_no_records():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[]):
+        result = check_booking(2)
+    assert result == None
+
+def test_cancel_booking_when_no_records():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[]):
+        result = cancel_booking(2, "wrong day booking")
+    assert result == "Booking not found."
+
+@pytest.mark.parametrize("status", ["pending", "declined", "cancelled"])
+def test_cancel_booking_when_status_not_confirmed(status):
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": status, "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]):
+        result = cancel_booking(2, "wrong day booking")
+    assert result == f"Cannot be cancelled as the booking has been {status}"
+
+
+def test_cancel_booking_when_status_confirmed():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "confirmed", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]), \
+    patch("tools_lambda.tools.booking.update_status", return_value=[{"session_id": 1, "reservation_id": 2, "availability": "True", "confirmed_declined": "cancelled", "reason": "wrong day booking", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "start_time_hold_reserve": "2026-08-27T13:50:00", "end_time_hold_reserve":"2026-08-27T13:54:00", "created_at_timestamp": "2026-08-27T13:50:00", "occupancy_end_time": "2026-08-28T13:30:00"}]):
+        result = cancel_booking(2, "wrong day booking")
+    assert result == {
+        "session_id": 1,
+        "booking_id": 2,
+        "status": "cancelled",
+        "message": "Your booking has been cancelled and the reason is wrong day booking"
+    }
+
+def test_bucket_gate():
+    allergy_info = _bucket_gate("severe peanut allergy")
+    assert allergy_info == "bucket 2"
