@@ -270,7 +270,11 @@ def test_cancel_booking_when_status_confirmed():
         "status": "cancelled",
         "message": "Your booking has been cancelled and the reason is wrong day booking"
     }
+@pytest.mark.parametrize("allergy_bucket, expected", [
+    pytest.param("severe peanut allergy", "bucket 2", id="Extreme word used"),
+    pytest.param("", "bucket 1", id="No allergy")
 
-def test_bucket_gate():
-    allergy_info = _bucket_gate("severe peanut allergy")
-    assert allergy_info == "bucket 2"
+])
+def test_bucket_gate(allergy_bucket, expected):
+    allergy_info = _bucket_gate(allergy_bucket)
+    assert allergy_info == expected
