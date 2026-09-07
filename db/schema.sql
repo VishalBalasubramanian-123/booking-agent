@@ -51,7 +51,7 @@ CREATE TABLE reservation (
   start_time_hold_reserve TIMESTAMP,
   end_time_hold_reserve TIMESTAMP,
   created_at_timestamp TIMESTAMP DEFAULT now(),
-  occupancy_end_time TIMESTAMP
+  occupancy_end_time TIMESTAMP NOT NULL
 );
 
 -- ---------- Restaurant reference data + knowledge base ----------
