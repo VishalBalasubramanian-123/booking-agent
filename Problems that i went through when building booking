@@ -1,0 +1,4 @@
+Problems that i went through when building booking-agent:
+
+1. when pasing table_number to db:
+At first we were passing table_number for the db lookup, but after checking the flow, I found that we need to also pass in the table_id for the lookup and get the table number from joining the tables to get the table_number.
