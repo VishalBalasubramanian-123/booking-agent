@@ -24,7 +24,7 @@ CREATE TABLE customer (
 
 CREATE TABLE session (
   session_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  customer_id INT NOT NULL REFERENCES customer(customer_id),
+  customer_id INT REFERENCES customer(customer_id),
   created_at_timestamp TIMESTAMP DEFAULT now()
 );
 
