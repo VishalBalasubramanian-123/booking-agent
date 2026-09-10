@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, date, time
 
 from shared.db import supabase
-from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time, get_booking_status , update_status
+from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time, get_booking_status , update_status, book_table, get_customer, insert_customer, get_table_id, link_reservation_to_table
 from tools_lambda.tools.kb import check_KB as check_KB_tool
 
 # Default table occupancy when the guest doesn't specify how long they're staying.
@@ -36,7 +36,7 @@ def check_availability(date, time, party_size, table_number=None, stay_minutes=N
     candidate_tables = get_tables(party_size)
 
     if not candidate_tables:
-        return f"No single table fits a party of {party_size}"
+        return [f"No single table fits a party of {party_size}"]
         # bucket-3 territory (owner decides on combining tables) — not this tool's job
 
     results = []
@@ -100,13 +100,61 @@ def check_availability(date, time, party_size, table_number=None, stay_minutes=N
             r for r in results
             if (r.get("available") or r.get("next_available_time") is not None) and r["table"] != table_number #checks for both available = True and alternate times the table is available for.
         ]
-        return {"requested_table": requested, "alternative_tables": same_night_alternatives}
+        return [{"requested_table": requested, "alternative_tables": same_night_alternatives}]
     else:
         return results  # full status across every candidate table
 
 
-def reserve_table(date, time, party_size, name, phone, email, table_number=None):
-    pass
+def reserve_table(date: date, time: time, party_size: int, name: str, allergy_info: str, phone: str, email: str | None, table_number: int | None, session_id: int) -> dict:
+
+    if not name and not phone:
+        return "Please provide your name and phone number"
+    elif not name:
+        return "Please provide your name"
+    elif not phone:
+        return "Please provide your phone number"
+
+    table_id = get_table_id(table_number)
+
+    check_customer_exists = get_customer(name, phone)
+
+    # Make sure a customer record exists for this guest. session_id comes in
+    # as its own parameter (this conversation's session) — it is not derived
+    # from the customer lookup.
+    if not check_customer_exists:
+        insert_customer(name, phone, email)
+
+    occupancy_end_time = datetime.combine(date, time) + DEFAULT_OCCUPANCY_TIME
+    booking_table = book_table(
+        session_id=session_id,
+        date=date,
+        confirmed_declined="pending",
+        allergy_info=allergy_info,
+        time=time,
+        party_size=party_size,
+        occupancy_end_time=occupancy_end_time,
+    )
+    link_reservation_to_table(booking_table[0]["reservation_id"], table_id)
+
+    bucket = _bucket_gate(allergy_info)
+
+    if bucket == "bucket 1":
+        status_update = update_status(session_id, booking_table[0]["reservation_id"], "confirmed", "No allergy or safety concern noted")
+    else:
+        send_verification = verification_to_human(booking_table[0]["reservation_id"], allergy_info)
+        if send_verification["status"].lower() == "yes":
+            status_update = update_status(session_id, booking_table[0]["reservation_id"], "confirmed", send_verification["reason"])
+        else:
+            status_update = update_status(session_id, booking_table[0]["reservation_id"], "declined", send_verification["reason"])
+
+    return {
+        "session_id": status_update[0]["session_id"],
+        "reservation_id": booking_table[0]["reservation_id"],
+        "date": booking_table[0]["date"],
+        "time": booking_table[0]["time"],
+        "party_size": booking_table[0]["party_size"],
+        "status": status_update[0]["confirmed_declined"]
+    }
 
 
 def check_booking(booking_id):
@@ -142,7 +190,7 @@ def cancel_booking(booking_id, reason):
     if check_status["status"].lower() in ["pending", "declined", "cancelled"]:
         return f"Cannot be cancelled as the booking has been {check_status['status']}"
 
-    cancellation = update_status(check_status["session_id"], booking_id, reason)
+    cancellation = update_status(check_status["session_id"], booking_id, "cancelled", reason)
 
     result = {
         "session_id": cancellation[0]["session_id"],
