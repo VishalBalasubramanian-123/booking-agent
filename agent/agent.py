@@ -12,7 +12,7 @@ from shared.config import TOOLS_LAMBDA_NAME
 load_dotenv()
 
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system_prompt.md"
-SYSTEM_PROMPT = SYSTEM_PROMPT_PATH.read_text()
+SYSTEM_PROMPT_TEMPLATE = SYSTEM_PROMPT_PATH.read_text()
 
 # model = BedrockModel(model_id="anthropic.claude-haiku-4-5-20251001-v1:0")amazon.nova-2-lite-v1:0
 model = BedrockModel(model_id="us.amazon.nova-2-lite-v1:0")
@@ -27,6 +27,13 @@ def _invoke_tool(action, **parameters):
         Payload=json.dumps({"action": action, "parameters": parameters}).encode(),
     )
     return json.loads(response["Payload"].read())
+
+
+# Restaurant name is fetched once at startup (not an LLM-callable tool — this is
+# deployment context, not something the agent should ever need to ask itself for
+# mid-conversation) and baked into the system prompt before the Agent is built.
+_restaurant_name = _invoke_tool("get_restaurant_name")
+SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(restaurant_name=_restaurant_name)
 
 
 @tool

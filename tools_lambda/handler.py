@@ -7,6 +7,7 @@ ACTIONS = {
     "check_booking": booking.check_booking,
     "verification_to_human": booking.verification_to_human,
     "decision_to_human": booking.decision_to_human,
+    "get_restaurant_name": booking.get_restaurant_name,
 }
 
 

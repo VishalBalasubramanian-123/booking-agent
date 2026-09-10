@@ -65,7 +65,7 @@ def test_find_next_free_start(bookings, expected):
 def test_check_availability_when_no_candidate_tables():
     with patch("tools_lambda.tools.booking.get_tables", return_value=[]):
         result = check_availability(date(2026, 8, 28), time(19, 0), party_size=4)
-    assert result == "No single table fits a party of 4"
+    assert result == ["No single table fits a party of 4"]
 
 def test_check_availability_when_maintanence_window_available():
     with  patch("tools_lambda.tools.booking.get_tables", return_value=[{"table_id": 3, "table_number": 5}]), \
@@ -214,7 +214,7 @@ def test_check_availability_when_table_given():
     patch("tools_lambda.tools.booking.get_existing_bookings", side_effect=fake_get_existing_bookings_step6), \
     patch("tools_lambda.tools.booking.get_closing_time", side_effect=fake_get_closing_time_step6):
         result = check_availability(date(2026, 8, 28), time(21, 0), table_number=5, party_size=2)
-    assert result == {
+    assert result == [{
         "requested_table": {
             "table": 5,
             "available": True,
@@ -228,7 +228,7 @@ def test_check_availability_when_table_given():
                 "next_available_time": datetime.fromisoformat("2026-08-28T22:00:00"),
             },
         ],
-    }
+    }]
 
 def test_check_booking_when_records_present():
     with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "pending", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]):
