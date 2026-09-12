@@ -116,3 +116,7 @@ def get_customer(name, phone):
 def insert_customer(name, phone, email):
     updated_status = supabase.table("customer").insert({"name": name, "phone": phone, "email": email}).execute().data
     return updated_status
+
+def create_session():
+    created_session = supabase.table("session").insert({"customer_id": None}).execute().data
+    return created_session
