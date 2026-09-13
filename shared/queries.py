@@ -120,3 +120,28 @@ def insert_customer(name, phone, email):
 def create_session():
     created_session = supabase.table("session").insert({"customer_id": None}).execute().data
     return created_session
+
+def insert_escalation(booking_id, session_id, bucket):
+    escalation = supabase.table("escalation").insert({"reservation_id": booking_id, "session_id": session_id, "bucket": bucket}).execute().data
+    return escalation
+
+def get_pending_escalations():
+    response = (
+        supabase.table("escalation")
+        .select("escalation_id, reservation_id, session_id, bucket, reservation(allergy_info, party_size, date, time)")
+        .is_("owners_answer", "null")
+        .execute()
+        .data
+    )
+    return response
+
+def update_escalation_answer(reservation_id, answer):
+    updated = (
+        supabase.table("escalation")
+        .update({"owners_answer": answer, "responded_at": datetime.now().isoformat()})
+        .eq("reservation_id", reservation_id)
+        .is_("owners_answer", "null")
+        .execute()
+        .data
+    )
+    return updated
