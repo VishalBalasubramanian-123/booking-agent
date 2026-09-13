@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, date, time
 
 from shared.db import supabase
-from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time, get_booking_status , update_status, book_table, get_customer, insert_customer, get_table_id, link_reservation_to_table
+from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time, get_booking_status , update_status, book_table, get_customer, insert_customer, get_table_id, link_reservation_to_table, insert_escalation, update_escalation_answer
 from tools_lambda.tools.kb import check_KB as check_KB_tool
 
 # Default table occupancy when the guest doesn't specify how long they're staying.
@@ -140,20 +140,21 @@ def reserve_table(date: date, time: time, party_size: int, name: str, allergy_in
 
     if bucket == "bucket 1":
         status_update = update_status(session_id, booking_table[0]["reservation_id"], "confirmed", "No allergy or safety concern noted")
+        status = status_update[0]["confirmed_declined"]
     else:
-        send_verification = verification_to_human(booking_table[0]["reservation_id"], allergy_info)
-        if send_verification["status"].lower() == "yes":
-            status_update = update_status(session_id, booking_table[0]["reservation_id"], "confirmed", send_verification["reason"])
-        else:
-            status_update = update_status(session_id, booking_table[0]["reservation_id"], "declined", send_verification["reason"])
+        # Bucket 2 is fire-and-forget: hand off to the owner and return
+        # immediately. The reservation stays "pending" until resolve_verification
+        # (called from the owner side) or the hold-expiry sweep updates it.
+        verification_to_human(booking_table[0]["reservation_id"], session_id, allergy_info, bucket)
+        status = "pending"
 
     return {
-        "session_id": status_update[0]["session_id"],
+        "session_id": session_id,
         "reservation_id": booking_table[0]["reservation_id"],
         "date": booking_table[0]["date"],
         "time": booking_table[0]["time"],
         "party_size": booking_table[0]["party_size"],
-        "status": status_update[0]["confirmed_declined"]
+        "status": status
     }
 
 
@@ -175,12 +176,36 @@ def check_booking(booking_id):
         return None
 
 
-def verification_to_human(booking_id, reason):
-    pass
+def verification_to_human(booking_id, session_id, bucket):
+    escalation = insert_escalation(booking_id, session_id, bucket)
+    return "Please wait a moment, checking with the team for confirmation"
 
+def resolve_verification(booking_id, answer, reason):
+    check_status = check_booking(booking_id)
+    if check_status is None:
+        return "Booking not found."
 
-def decision_to_human(booking_id, decision):
-    pass
+    escalation_update = update_escalation_answer(booking_id, answer)
+    if not escalation_update:
+        return "This booking has already been resolved."
+
+    if answer.strip().lower() == "yes":
+        status = "confirmed"  
+        final_reason = reason.strip() if reason and reason.strip() else "The owner approved the booking"
+    else:
+        status = "declined"
+        final_reason = reason.strip() if reason and reason.strip() else "The owner declined the booking"
+
+    status_update = update_status(check_status["session_id"], booking_id, status, final_reason)
+
+    return {
+        "session_id": status_update[0]["session_id"],
+        "booking_id": status_update[0]["reservation_id"],
+        "status": status_update[0]["confirmed_declined"],
+    }
+
+# def decision_to_human(booking_id, decision):
+#     pass
 
 def cancel_booking(booking_id, reason):
     check_status = check_booking(booking_id)
