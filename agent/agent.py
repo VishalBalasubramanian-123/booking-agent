@@ -1,9 +1,13 @@
 # Strands agent definition, deployed to AgentCore Runtime.
 import json
+import threading
+import time
 from pathlib import Path
 
 import boto3
 from dotenv import load_dotenv
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
 from strands import Agent, tool
 from strands.models import BedrockModel
 
@@ -35,6 +39,31 @@ def _invoke_tool(action, **parameters):
 _restaurant_name = _invoke_tool("get_restaurant_name")
 SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(restaurant_name=_restaurant_name)
 
+# One session per CLI run, same reasoning as _restaurant_name above — not
+# something the agent should ever ask itself for mid-conversation.
+_session = _invoke_tool("create_session")
+_session_id = _session[0]["session_id"]
+
+
+def _watch_verification(reservation_id):
+    """Runs in a background thread: polls until the owner resolves the
+    escalation (or the hold window runs out) and prints the outcome.
+    Display only — does NOT enforce the fail-closed decline itself; that's
+    the hold-expiry sweep's job, independent of whether this is running."""
+    max_wait_seconds = 5 * 60  # matches the booking hold window
+    poll_interval = 5
+    waited = 0
+
+    while waited < max_wait_seconds:
+        time.sleep(poll_interval)
+        waited += poll_interval
+        booking = _invoke_tool("check_booking", booking_id=reservation_id)
+        if booking and booking.get("status") != "pending":
+            print(f"\n[Update] Booking {reservation_id} is now {booking['status']}.")
+            return
+
+    print(f"\n[Update] Booking {reservation_id} is still awaiting a response after {max_wait_seconds // 60} minutes.")
+
 
 @tool
 def check_availability(date: str, time: str, party_size: int, table_number: int | None = None) -> dict:
@@ -53,7 +82,14 @@ def check_availability(date: str, time: str, party_size: int, table_number: int 
 
 @tool
 def reserve_table(
-    date: str, time: str, party_size: int, name: str, phone: str, email: str, table_number: int | None = None
+    date: str,
+    time: str,
+    party_size: int,
+    name: str,
+    phone: str,
+    email: str,
+    allergy_info: str = "",
+    table_number: int | None = None,
 ) -> dict:
     """Reserve a table for a guest.
 
@@ -64,9 +100,10 @@ def reserve_table(
         name: Guest's name.
         phone: Guest's phone number.
         email: Guest's email address.
+        allergy_info: Any allergy or safety concern the guest mentioned, if any.
         table_number: Specific table requested, if any.
     """
-    return _invoke_tool(
+    result = _invoke_tool(
         "reserve_table",
         date=date,
         time=time,
@@ -74,8 +111,13 @@ def reserve_table(
         name=name,
         phone=phone,
         email=email,
+        allergy_info=allergy_info,
         table_number=table_number,
+        session_id=_session_id,
     )
+    if isinstance(result, dict) and result.get("status") == "pending":
+        threading.Thread(target=_watch_verification, args=(result["reservation_id"],), daemon=True).start()
+    return result
 
 
 @tool
@@ -99,29 +141,30 @@ def verification_to_human(booking_id: str, reason: str) -> dict:
     return _invoke_tool("verification_to_human", booking_id=booking_id, reason=reason)
 
 
-@tool
-def decision_to_human(booking_id: str, decision: str) -> dict:
-    """Record a human's decision on an escalated booking.
+# @tool
+# def decision_to_human(booking_id: str, decision: str) -> dict:
+#     """Record a human's decision on an escalated booking.
 
-    Args:
-        booking_id: The booking's unique identifier.
-        decision: The human's decision (e.g. approve, decline).
-    """
-    return _invoke_tool("decision_to_human", booking_id=booking_id, decision=decision)
+#     Args:
+#         booking_id: The booking's unique identifier.
+#         decision: The human's decision (e.g. approve, decline).
+#     """
+#     return _invoke_tool("decision_to_human", booking_id=booking_id, decision=decision)
 
 
 agent = Agent(
     model=model,
     system_prompt=SYSTEM_PROMPT,
-    tools=[check_availability, reserve_table, check_booking, verification_to_human, decision_to_human],
+    tools=[check_availability, reserve_table, check_booking, verification_to_human],
     callback_handler=None,
 )
 
-
 if __name__ == "__main__":
-    while True:
-        user_input = input("You: ")
-        if user_input.strip().lower() == "exit":
-            break
-        response = agent(user_input)
-        print(response)
+    session = PromptSession()
+    with patch_stdout():
+        while True:
+            user_input = session.prompt("You: ")
+            if user_input.strip().lower() == "exit":
+                break
+            response = agent(user_input)
+            print(response)
