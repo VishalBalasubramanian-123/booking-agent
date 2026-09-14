@@ -1,13 +1,14 @@
 # Lambda entrypoint, dispatches to tools/ by action name.
-from tools_lambda.tools import booking
+from tools_lambda.tools import booking, kb
+from shared import queries
 
 ACTIONS = {
     "check_availability": booking.check_availability,
     "reserve_table": booking.reserve_table,
     "check_booking": booking.check_booking,
-    "verification_to_human": booking.verification_to_human,
-    "decision_to_human": booking.decision_to_human,
-    "get_restaurant_name": booking.get_restaurant_name,
+    "get_restaurant_name": queries.get_restaurant_name,
+    "check_KB": kb.check_KB,
+    "create_session": queries.create_session
 }
 
 
