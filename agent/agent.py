@@ -3,7 +3,7 @@ import json
 import threading
 import time
 from pathlib import Path
-
+from datetime import date, time, timedelta, datetime
 import boto3
 from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
@@ -66,7 +66,7 @@ def _watch_verification(reservation_id):
 
 
 @tool
-def check_availability(date: str, time: str, party_size: int, table_number: int | None = None) -> dict:
+def check_availability(date: str, time: str, party_size: int, table_number: int | None = None, stay_minutes: int | None = None) -> dict:
     """Check whether a table is available for a given date, time, and party size.
 
     Args:
@@ -76,7 +76,7 @@ def check_availability(date: str, time: str, party_size: int, table_number: int 
         table_number: Specific table to check, if the guest requested one.
     """
     return _invoke_tool(
-        "check_availability", date=date, time=time, party_size=party_size, table_number=table_number
+        "check_availability", date=date, time=time, party_size=party_size, table_number=table_number, stay_minutes=stay_minutes
     )
 
 
@@ -130,16 +130,6 @@ def check_booking(booking_id: str) -> dict:
     return _invoke_tool("check_booking", booking_id=booking_id)
 
 
-@tool
-def verification_to_human(booking_id: str, reason: str) -> dict:
-    """Escalate a booking to a human for verification.
-
-    Args:
-        booking_id: The booking's unique identifier.
-        reason: Why the booking needs human verification.
-    """
-    return _invoke_tool("verification_to_human", booking_id=booking_id, reason=reason)
-
 
 # @tool
 # def decision_to_human(booking_id: str, decision: str) -> dict:
@@ -151,11 +141,21 @@ def verification_to_human(booking_id: str, reason: str) -> dict:
 #     """
 #     return _invoke_tool("decision_to_human", booking_id=booking_id, decision=decision)
 
+@tool
+def check_KB(topic: str) -> list[dict]:
+    """Check the KB if the information on the user query is present.
+    
+    Args:
+        topic: The query asked by the users
+    """
+    return _invoke_tool("check_KB", topic=topic)
+
+
 
 agent = Agent(
     model=model,
     system_prompt=SYSTEM_PROMPT,
-    tools=[check_availability, reserve_table, check_booking, verification_to_human],
+    tools=[check_availability, reserve_table, check_booking, check_KB],
     callback_handler=None,
 )
 

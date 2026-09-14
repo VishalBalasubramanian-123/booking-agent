@@ -3,11 +3,15 @@ from datetime import datetime, timedelta, date, time
 
 from shared.db import supabase
 from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time, get_booking_status , update_status, book_table, get_customer, insert_customer, get_table_id, link_reservation_to_table, insert_escalation, update_escalation_answer
-from tools_lambda.tools.kb import check_KB as check_KB_tool
 
 # Default table occupancy when the guest doesn't specify how long they're staying.
 DEFAULT_OCCUPANCY_TIME = timedelta(minutes=90)
 
+def _to_date(value):
+    return date.fromisoformat(value) if isinstance(value, str) else value
+
+def _to_time(value):
+    return time.fromisoformat(value) if isinstance(value, str) else value
 
 def _windows_overlap(a_start, a_end, b_start, b_end):
     "checks if  either start_time asked by user is within (conflicting) existing booking end time"
@@ -29,7 +33,11 @@ def _find_next_free_start(time, occupancy_time, sorted_bookings):
             return candidate_start
 
 
-def check_availability(date, time, party_size, table_number=None, stay_minutes=None):
+def check_availability(date: date, time: time, party_size: int, table_number: int | None = None, stay_minutes: int | None = None):
+
+    date = _to_date(date)
+    time = _to_time(time)
+
     occupancy_time = timedelta(minutes=stay_minutes) if stay_minutes else DEFAULT_OCCUPANCY_TIME
 
     # Step 1: Capacity filter, before anything else
@@ -107,6 +115,9 @@ def check_availability(date, time, party_size, table_number=None, stay_minutes=N
 
 def reserve_table(date: date, time: time, party_size: int, name: str, allergy_info: str, phone: str, email: str | None, table_number: int | None, session_id: int) -> dict:
 
+    date = _to_date(date)
+    time = _to_time(time)
+
     if not name and not phone:
         return "Please provide your name and phone number"
     elif not name:
@@ -145,7 +156,7 @@ def reserve_table(date: date, time: time, party_size: int, name: str, allergy_in
         # Bucket 2 is fire-and-forget: hand off to the owner and return
         # immediately. The reservation stays "pending" until resolve_verification
         # (called from the owner side) or the hold-expiry sweep updates it.
-        verification_to_human(booking_table[0]["reservation_id"], session_id, allergy_info, bucket)
+        verification_to_human(booking_table[0]["reservation_id"], session_id, bucket)
         status = "pending"
 
     return {
