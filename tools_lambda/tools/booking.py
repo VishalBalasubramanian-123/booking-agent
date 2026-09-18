@@ -7,19 +7,19 @@ from shared.queries import get_existing_bookings, get_maintenance_window, get_ta
 # Default table occupancy when the guest doesn't specify how long they're staying.
 DEFAULT_OCCUPANCY_TIME = timedelta(minutes=90)
 
-def _to_date(value):
+def _to_date(value: str | date):
     return date.fromisoformat(value) if isinstance(value, str) else value
 
-def _to_time(value):
+def _to_time(value: str | time):
     return time.fromisoformat(value) if isinstance(value, str) else value
 
-def _windows_overlap(a_start, a_end, b_start, b_end):
+def _windows_overlap(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime):
     "checks if  either start_time asked by user is within (conflicting) existing booking end time"
     "or the end_time asked for is within the existing booked start time"
     return a_start < b_end and b_start < a_end
 
 
-def _find_next_free_start(time, occupancy_time, sorted_bookings):
+def _find_next_free_start(time: datetime, occupancy_time: timedelta, sorted_bookings: list[dict]):
     "this function is to find the next available time of the tables. also implements the _windows_overlap function"
     candidates = sorted({time, *(b["occupancy_end_time"] for b in sorted_bookings)})
     for candidate_start in candidates:
@@ -126,6 +126,8 @@ def reserve_table(date: date, time: time, party_size: int, name: str, allergy_in
         return "Please provide your phone number"
 
     table_id = get_table_id(table_number)
+    if table_id is None:
+            return "Please choose one of the available tables first."
 
     check_customer_exists = get_customer(name, phone)
 
@@ -149,10 +151,10 @@ def reserve_table(date: date, time: time, party_size: int, name: str, allergy_in
 
     bucket = _bucket_gate(allergy_info)
 
-    if bucket == "bucket 1":
+    if bucket == "auto":
         status_update = update_status(session_id, booking_table[0]["reservation_id"], "confirmed", "No allergy or safety concern noted")
         status = status_update[0]["confirmed_declined"]
-    else:
+    elif bucket == "verification":
         # Bucket 2 is fire-and-forget: hand off to the owner and return
         # immediately. The reservation stays "pending" until resolve_verification
         # (called from the owner side) or the hold-expiry sweep updates it.
@@ -169,7 +171,7 @@ def reserve_table(date: date, time: time, party_size: int, name: str, allergy_in
     }
 
 
-def check_booking(booking_id):
+def check_booking(booking_id: int):
     current_status = get_booking_status(booking_id)
 
     if current_status:
@@ -187,11 +189,11 @@ def check_booking(booking_id):
         return None
 
 
-def verification_to_human(booking_id, session_id, bucket):
+def verification_to_human(booking_id: int, session_id: int, bucket: str):
     escalation = insert_escalation(booking_id, session_id, bucket)
     return "Please wait a moment, checking with the team for confirmation"
 
-def resolve_verification(booking_id, answer, reason):
+def resolve_verification(booking_id: int, answer: str, reason: str):
     check_status = check_booking(booking_id)
     if check_status is None:
         return "Booking not found."
@@ -218,7 +220,7 @@ def resolve_verification(booking_id, answer, reason):
 # def decision_to_human(booking_id, decision):
 #     pass
 
-def cancel_booking(booking_id, reason):
+def cancel_booking(booking_id: int, reason: str = "No reason given"):
     check_status = check_booking(booking_id)
 
     if check_status is None:
@@ -238,7 +240,7 @@ def cancel_booking(booking_id, reason):
     return result
 
 
-def _bucket_gate(allergy_info):
+def _bucket_gate(allergy_info: str):
     if allergy_info:
-        return "bucket 2"
-    return "bucket 1"
+        return "verification"
+    return "auto"

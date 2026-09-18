@@ -8,7 +8,9 @@ ACTIONS = {
     "check_booking": booking.check_booking,
     "get_restaurant_name": queries.get_restaurant_name,
     "check_KB": kb.check_KB,
-    "create_session": queries.create_session
+    "create_session": queries.create_session,
+    "insert_conversation": queries.insert_conversation,
+    "cancel_booking": booking.cancel_booking
 }
 
 
