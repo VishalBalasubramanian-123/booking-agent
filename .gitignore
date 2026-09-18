@@ -19,3 +19,10 @@ idea.md
 # IDE (optional, personal preference)
 .vscode/
 .idea/
+
+# Lambda deploy scratch (packaged locally, not source)
+build/
+*.zip
+trust-policy.json
+bedrock-policy.json
+response.json
