@@ -63,7 +63,11 @@ CREATE TABLE restaurant_info (
   city VARCHAR(100),
   country VARCHAR(100),
   pincode VARCHAR(20),
-  created_at TIMESTAMP DEFAULT now()
+  created_at TIMESTAMP DEFAULT now(),
+  weekday_opening_time TIME NOT NULL DEFAULT '09:00:00',
+  weekday_closing_time TIME NOT NULL DEFAULT '22:00:00',
+  weekend_opening_time TIME NOT NULL DEFAULT '09:00:00',
+  weekend_closing_time TIME NOT NULL DEFAULT '22:00:00'
 );
 
 CREATE TABLE restaurant_kb (
