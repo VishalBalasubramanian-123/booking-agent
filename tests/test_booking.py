@@ -1,5 +1,17 @@
 # Tests for the agent's system prompt and Agent construction.
-from tools_lambda.tools.booking import _windows_overlap, _find_next_free_start, check_availability, check_booking, cancel_booking, _bucket_gate
+from tools_lambda.tools.booking import (
+    _windows_overlap,
+    _find_next_free_start,
+    _to_date,
+    _to_time,
+    check_availability,
+    reserve_table,
+    check_booking,
+    verification_to_human,
+    resolve_verification,
+    cancel_booking,
+    _bucket_gate,
+)
 from unittest.mock import patch
 import pytest
 from datetime import datetime, date, time, timedelta
@@ -60,6 +72,24 @@ def test_find_next_free_start(bookings, expected):
     response = _find_next_free_start(requested_start, occupancy_time, sorted_query_result)
 
     assert response == expected
+
+
+def test_to_date_converts_string():
+    assert _to_date("2026-08-28") == date(2026, 8, 28)
+
+
+def test_to_date_passes_through_date_object():
+    d = date(2026, 8, 28)
+    assert _to_date(d) is d
+
+
+def test_to_time_converts_string():
+    assert _to_time("19:00:00") == time(19, 0, 0)
+
+
+def test_to_time_passes_through_time_object():
+    t = time(19, 0, 0)
+    assert _to_time(t) is t
 
 
 def test_check_availability_when_no_candidate_tables():
@@ -230,6 +260,80 @@ def test_check_availability_when_table_given():
         ],
     }]
 
+def test_reserve_table_when_no_name_and_no_phone():
+    result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="", allergy_info="", phone="", email=None, table_number=5, session_id=1)
+    assert result == "Please provide your name and phone number"
+
+
+def test_reserve_table_when_no_name():
+    result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="", allergy_info="", phone="1234567890", email=None, table_number=5, session_id=1)
+    assert result == "Please provide your name"
+
+
+def test_reserve_table_when_no_phone():
+    result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="", phone="", email=None, table_number=5, session_id=1)
+    assert result == "Please provide your phone number"
+
+
+def test_reserve_table_when_table_not_found():
+    with patch("tools_lambda.tools.booking.get_table_id", return_value=None):
+        result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="", phone="1234567890", email=None, table_number=99, session_id=1)
+    assert result == "Please choose one of the available tables first."
+
+
+def test_reserve_table_new_customer_no_allergy_confirms():
+    with patch("tools_lambda.tools.booking.get_table_id", return_value=3), \
+    patch("tools_lambda.tools.booking.get_customer", return_value=[]), \
+    patch("tools_lambda.tools.booking.insert_customer") as mock_insert_customer, \
+    patch("tools_lambda.tools.booking.book_table", return_value=[{"reservation_id": 10, "date": "2026-08-28", "time": "19:00:00", "party_size": 2}]), \
+    patch("tools_lambda.tools.booking.link_reservation_to_table") as mock_link, \
+    patch("tools_lambda.tools.booking.update_status", return_value=[{"confirmed_declined": "confirmed"}]) as mock_update_status:
+        result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="", phone="1234567890", email=None, table_number=5, session_id=1)
+
+    mock_insert_customer.assert_called_once_with("John", "1234567890", None)
+    mock_link.assert_called_once_with(10, 3)
+    mock_update_status.assert_called_once_with(1, 10, "confirmed", "No allergy or safety concern noted")
+    assert result == {
+        "session_id": 1,
+        "reservation_id": 10,
+        "date": "2026-08-28",
+        "time": "19:00:00",
+        "party_size": 2,
+        "status": "confirmed",
+    }
+
+
+def test_reserve_table_existing_customer_skips_insert():
+    with patch("tools_lambda.tools.booking.get_table_id", return_value=3), \
+    patch("tools_lambda.tools.booking.get_customer", return_value=[{"customer_id": 1, "name": "John", "phone": "1234567890"}]), \
+    patch("tools_lambda.tools.booking.insert_customer") as mock_insert_customer, \
+    patch("tools_lambda.tools.booking.book_table", return_value=[{"reservation_id": 10, "date": "2026-08-28", "time": "19:00:00", "party_size": 2}]), \
+    patch("tools_lambda.tools.booking.link_reservation_to_table"), \
+    patch("tools_lambda.tools.booking.update_status", return_value=[{"confirmed_declined": "confirmed"}]):
+        reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="", phone="1234567890", email=None, table_number=5, session_id=1)
+
+    mock_insert_customer.assert_not_called()
+
+
+def test_reserve_table_with_allergy_goes_pending():
+    with patch("tools_lambda.tools.booking.get_table_id", return_value=3), \
+    patch("tools_lambda.tools.booking.get_customer", return_value=[{"customer_id": 1}]), \
+    patch("tools_lambda.tools.booking.book_table", return_value=[{"reservation_id": 10, "date": "2026-08-28", "time": "19:00:00", "party_size": 2}]), \
+    patch("tools_lambda.tools.booking.link_reservation_to_table"), \
+    patch("tools_lambda.tools.booking.verification_to_human") as mock_verification:
+        result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="peanut allergy", phone="1234567890", email=None, table_number=5, session_id=1)
+
+    mock_verification.assert_called_once_with(10, 1, "verification")
+    assert result == {
+        "session_id": 1,
+        "reservation_id": 10,
+        "date": "2026-08-28",
+        "time": "19:00:00",
+        "party_size": 2,
+        "status": "pending",
+    }
+
+
 def test_check_booking_when_records_present():
     with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "pending", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]):
         result = check_booking(2)
@@ -247,6 +351,60 @@ def test_check_booking_when_no_records():
     with patch("tools_lambda.tools.booking.get_booking_status", return_value=[]):
         result = check_booking(2)
     assert result == None
+
+def test_verification_to_human_inserts_escalation():
+    with patch("tools_lambda.tools.booking.insert_escalation") as mock_insert:
+        result = verification_to_human(10, 1, "verification")
+    mock_insert.assert_called_once_with(10, 1, "verification")
+    assert result == "Please wait a moment, checking with the team for confirmation"
+
+
+def test_resolve_verification_booking_not_found():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[]):
+        result = resolve_verification(2, "yes", "")
+    assert result == "Booking not found."
+
+
+def test_resolve_verification_already_resolved():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "pending", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]), \
+    patch("tools_lambda.tools.booking.update_escalation_answer", return_value=[]):
+        result = resolve_verification(2, "yes", "")
+    assert result == "This booking has already been resolved."
+
+
+def test_resolve_verification_yes_with_reason():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "pending", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]), \
+    patch("tools_lambda.tools.booking.update_escalation_answer", return_value=[{"owners_answer": "yes"}]), \
+    patch("tools_lambda.tools.booking.update_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "confirmed"}]) as mock_update_status:
+        result = resolve_verification(2, "yes", "kitchen confirmed no cross contamination")
+    mock_update_status.assert_called_once_with(1, 2, "confirmed", "kitchen confirmed no cross contamination")
+    assert result == {"session_id": 1, "booking_id": 2, "status": "confirmed"}
+
+
+def test_resolve_verification_yes_without_reason_uses_default():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "pending", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]), \
+    patch("tools_lambda.tools.booking.update_escalation_answer", return_value=[{"owners_answer": "yes"}]), \
+    patch("tools_lambda.tools.booking.update_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "confirmed"}]) as mock_update_status:
+        resolve_verification(2, "yes", "")
+    mock_update_status.assert_called_once_with(1, 2, "confirmed", "The owner approved the booking")
+
+
+def test_resolve_verification_no_with_reason():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "pending", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]), \
+    patch("tools_lambda.tools.booking.update_escalation_answer", return_value=[{"owners_answer": "no"}]), \
+    patch("tools_lambda.tools.booking.update_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "declined"}]) as mock_update_status:
+        result = resolve_verification(2, "no", "kitchen can't guarantee it")
+    mock_update_status.assert_called_once_with(1, 2, "declined", "kitchen can't guarantee it")
+    assert result == {"session_id": 1, "booking_id": 2, "status": "declined"}
+
+
+def test_resolve_verification_no_without_reason_uses_default():
+    with patch("tools_lambda.tools.booking.get_booking_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "pending", "party_size": 4, "date": "2026-08-28", "time": "12:00:00", "allergy_info": "Peanut allergy", "occupancy_end_time": "2026-08-28T13:30:00"}]), \
+    patch("tools_lambda.tools.booking.update_escalation_answer", return_value=[{"owners_answer": "no"}]), \
+    patch("tools_lambda.tools.booking.update_status", return_value=[{"session_id": 1, "reservation_id": 2, "confirmed_declined": "declined"}]) as mock_update_status:
+        resolve_verification(2, "no", "")
+    mock_update_status.assert_called_once_with(1, 2, "declined", "The owner declined the booking")
+
 
 def test_cancel_booking_when_no_records():
     with patch("tools_lambda.tools.booking.get_booking_status", return_value=[]):
@@ -270,9 +428,10 @@ def test_cancel_booking_when_status_confirmed():
         "status": "cancelled",
         "message": "Your booking has been cancelled and the reason is wrong day booking"
     }
+
 @pytest.mark.parametrize("allergy_bucket, expected", [
-    pytest.param("severe peanut allergy", "bucket 2", id="Extreme word used"),
-    pytest.param("", "bucket 1", id="No allergy")
+    pytest.param("severe peanut allergy", "verification", id="Extreme word used"),
+    pytest.param("", "auto", id="No allergy")
 
 ])
 def test_bucket_gate(allergy_bucket, expected):

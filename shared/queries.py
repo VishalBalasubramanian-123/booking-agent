@@ -106,7 +106,19 @@ def link_reservation_to_table(reservation_id, table_id):
     return linked
 
 def book_table(session_id, date, confirmed_declined, allergy_info, time, party_size, occupancy_end_time):
-    booked_table = supabase.from_("reservation").insert({"session_id": session_id, "availability": False, "confirmed_declined": confirmed_declined, "party_size": party_size, "date": date, "time": time, "allergy_info": allergy_info, "start_time_hold_reserve": datetime.now(), "end_time_hold_reserve": datetime.now() + timedelta(minutes=5), "occupancy_end_time": occupancy_end_time}).execute().data
+    now = datetime.now()
+    booked_table = supabase.from_("reservation").insert({
+        "session_id": session_id,
+        "availability": False,
+        "confirmed_declined": confirmed_declined,
+        "party_size": party_size,
+        "date": date.isoformat(),
+        "time": time.isoformat(),
+        "allergy_info": allergy_info,
+        "start_time_hold_reserve": now.isoformat(),
+        "end_time_hold_reserve": (now + timedelta(minutes=5)).isoformat(),
+        "occupancy_end_time": occupancy_end_time.isoformat(),
+    }).execute().data
     return booked_table
 
 def get_customer(name, phone):
@@ -145,3 +157,19 @@ def update_escalation_answer(reservation_id, answer):
         .data
     )
     return updated
+
+def insert_conversation(session_id, message, by_who):
+    add_conversation = supabase.table("conversation").insert({"session_id": session_id, "message": message, "by_who": by_who}).execute().data
+    return add_conversation
+
+def get_expired_pending_reservations():
+    now = datetime.now().isoformat()
+    response = (
+        supabase.table("reservation")
+        .select("reservation_id, session_id")
+        .eq("confirmed_declined", "pending")
+        .lt("end_time_hold_reserve", now)
+        .execute()
+        .data
+    )
+    return response

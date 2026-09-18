@@ -3,7 +3,6 @@ import json
 import threading
 import time
 from pathlib import Path
-from datetime import date, time, timedelta, datetime
 import boto3
 from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
@@ -87,7 +86,7 @@ def reserve_table(
     party_size: int,
     name: str,
     phone: str,
-    email: str,
+    email: str | None = None,
     allergy_info: str = "",
     table_number: int | None = None,
 ) -> dict:
@@ -121,7 +120,7 @@ def reserve_table(
 
 
 @tool
-def check_booking(booking_id: str) -> dict:
+def check_booking(booking_id: int) -> dict:
     """Look up an existing booking by its ID.
 
     Args:
@@ -129,7 +128,15 @@ def check_booking(booking_id: str) -> dict:
     """
     return _invoke_tool("check_booking", booking_id=booking_id)
 
+@tool
+def cancel_booking(booking_id: int, reason: str = "No reason given"):
+    """cancels the table booking for the user
 
+    Args:
+        booking_id: The booking's unique identifier. 
+        reason: The reason for cancelling the booking
+    """
+    return _invoke_tool("cancel_booking", booking_id=booking_id, reason=reason)
 
 # @tool
 # def decision_to_human(booking_id: str, decision: str) -> dict:
@@ -155,7 +162,7 @@ def check_KB(topic: str) -> list[dict]:
 agent = Agent(
     model=model,
     system_prompt=SYSTEM_PROMPT,
-    tools=[check_availability, reserve_table, check_booking, check_KB],
+    tools=[check_availability, reserve_table, check_booking, check_KB, cancel_booking],
     callback_handler=None,
 )
 
@@ -164,7 +171,9 @@ if __name__ == "__main__":
     with patch_stdout():
         while True:
             user_input = session.prompt("You: ")
+            _invoke_tool("insert_conversation", session_id=_session_id, message=user_input, by_who="user")
             if user_input.strip().lower() == "exit":
                 break
             response = agent(user_input)
+            _invoke_tool("insert_conversation", session_id=_session_id, message=str(response), by_who="assistant")
             print(response)
