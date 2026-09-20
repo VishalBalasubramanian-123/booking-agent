@@ -2,10 +2,19 @@
 from datetime import datetime, timedelta, date, time
 
 from shared.db import supabase
-from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time, get_booking_status , update_status, book_table, get_customer, insert_customer, get_table_id, link_reservation_to_table, insert_escalation, update_escalation_answer
+from shared.queries import get_existing_bookings, get_maintenance_window, get_tables, get_closing_time, get_booking_status , update_status, book_table, get_customer, insert_customer, get_table_id, link_reservation_to_table, insert_escalation, update_escalation_answer, update_session_customer
 
 # Default table occupancy when the guest doesn't specify how long they're staying.
 DEFAULT_OCCUPANCY_TIME = timedelta(minutes=90)
+
+# Pre-written status framing, keyed by reserve_table's real status -- the model
+# should relay this verbatim rather than composing its own opening/celebratory
+# sentence, which has been observed saying "confirmed" while correctly showing
+# "Pending" two lines later in the same reply (error_log.md #27).
+STATUS_MESSAGES = {
+    "confirmed": "Your reservation is confirmed!",
+    "pending": "Your reservation is pending — we've noted the allergy/safety information you shared, and our team will review it before confirming. We'll let you know as soon as it's decided.",
+}
 
 def _to_date(value: str | date):
     return date.fromisoformat(value) if isinstance(value, str) else value
@@ -13,10 +22,37 @@ def _to_date(value: str | date):
 def _to_time(value: str | time):
     return time.fromisoformat(value) if isinstance(value, str) else value
 
+def _format_date_human(d: date) -> str:
+    return d.strftime("%A, %B %-d, %Y")
+
+def _format_time_human(t: time) -> str:
+    return t.strftime("%-I:%M %p")
+
+def _format_duration_human(td: timedelta) -> str:
+    total_minutes = int(td.total_seconds() // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} hour" + ("s" if hours != 1 else ""))
+    if minutes:
+        parts.append(f"{minutes} minute" + ("s" if minutes != 1 else ""))
+    return " ".join(parts) if parts else "0 minutes"
+
 def _windows_overlap(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime):
     "checks if  either start_time asked by user is within (conflicting) existing booking end time"
     "or the end_time asked for is within the existing booked start time"
     return a_start < b_end and b_start < a_end
+
+
+def _table_has_conflict(table_id: int, date: date, requested_start: datetime, requested_end: datetime) -> bool:
+    "re-checks a specific table for a real conflict at write time -- check_availability's" \
+    "result is only a snapshot from earlier in the conversation and can go stale (another" \
+    "guest, in another session, may have booked the same table/slot in the meantime)."
+    bookings = get_existing_bookings(table_id, date)
+    return any(
+        _windows_overlap(requested_start, requested_end, b["time"], b["occupancy_end_time"])
+        for b in bookings
+    )
 
 
 def _find_next_free_start(time: datetime, occupancy_time: timedelta, sorted_bookings: list[dict]):
@@ -57,7 +93,16 @@ def check_availability(date: date, time: time, party_size: int, table_number: in
         maintenance_window = get_maintenance_window(table_id, date, time)
         if maintenance_window:
             results.extend(
-                [{"table": table, "available": False, "reason": w["reason"], "window": [datetime.fromisoformat(w["start_time"]), datetime.fromisoformat(w["end_time"])]} for w in maintenance_window]
+                [
+                    {
+                        "table": table,
+                        "available": False,
+                        "reason": w["reason"],
+                        "window": [datetime.fromisoformat(w["start_time"]), datetime.fromisoformat(w["end_time"])],
+                        "window_display": f"{_format_time_human(datetime.fromisoformat(w['start_time']).time())} to {_format_time_human(datetime.fromisoformat(w['end_time']).time())}",
+                    }
+                    for w in maintenance_window
+                ]
             )
             continue
 
@@ -75,7 +120,14 @@ def check_availability(date: date, time: time, party_size: int, table_number: in
         ]
 
         if not conflicting:
-            results.append({"table": table, "available": True, "date": date, "time": time})
+            results.append({
+                "table": table,
+                "available": True,
+                "date": date,
+                "time": time,
+                "date_display": _format_date_human(date),
+                "time_display": _format_time_human(time),
+            })
             continue
 
         # Step 5: Table's busy at the requested time — find the next real gap that day
@@ -85,7 +137,12 @@ def check_availability(date: date, time: time, party_size: int, table_number: in
         closing_time = get_closing_time(date)
 
         if next_free_start is not None and next_free_start + occupancy_time <= closing_time:
-            results.append({"table": table, "available": False, "next_available_time": next_free_start})
+            results.append({
+                "table": table,
+                "available": False,
+                "next_available_time": next_free_start,
+                "next_available_time_display": _format_time_human(next_free_start.time()),
+            })
         else:
             # nothing free today — look ahead up to 2 days, same table
             alt_slots = []
@@ -98,7 +155,11 @@ def check_availability(date: date, time: time, party_size: int, table_number: in
                 sorted_next_day_bookings = sorted(next_day_bookings, key=lambda b: b["time"])
                 computed_time = _find_next_free_start(datetime.combine(next_date, time), occupancy_time, sorted_next_day_bookings)
                 if computed_time is not None and computed_time + occupancy_time <= next_day_closing:
-                    alt_slots.append((next_date, computed_time))
+                    alt_slots.append({
+                        "date": next_date,
+                        "time": computed_time,
+                        "display": f"{_format_date_human(next_date)} at {_format_time_human(computed_time.time())}",
+                    })
             results.append({"table": table, "available": False, "alternatives": alt_slots})
 
     # Step 6: Shape the response
@@ -129,13 +190,23 @@ def reserve_table(date: date, time: time, party_size: int, name: str, allergy_in
     if table_id is None:
             return "Please choose one of the available tables first."
 
+    requested_start = datetime.combine(date, time)
+    requested_end = requested_start + DEFAULT_OCCUPANCY_TIME
+    if _table_has_conflict(table_id, date, requested_start, requested_end):
+        return f"Table {table_number} is no longer available at that time — please check availability again."
+
     check_customer_exists = get_customer(name, phone)
 
     # Make sure a customer record exists for this guest. session_id comes in
     # as its own parameter (this conversation's session) — it is not derived
     # from the customer lookup.
-    if not check_customer_exists:
-        insert_customer(name, phone, email)
+    if check_customer_exists:
+        customer_id = check_customer_exists[0]["customer_id"]
+    else:
+        new_customer = insert_customer(name, phone, email)
+        customer_id = new_customer[0]["customer_id"]
+
+    update_session_customer(session_id, customer_id)
 
     occupancy_end_time = datetime.combine(date, time) + DEFAULT_OCCUPANCY_TIME
     booking_table = book_table(
@@ -161,13 +232,19 @@ def reserve_table(date: date, time: time, party_size: int, name: str, allergy_in
         verification_to_human(booking_table[0]["reservation_id"], session_id, bucket)
         status = "pending"
 
+    booked_date = _to_date(booking_table[0]["date"])
+    booked_time = _to_time(booking_table[0]["time"])
+
     return {
         "session_id": session_id,
         "reservation_id": booking_table[0]["reservation_id"],
         "date": booking_table[0]["date"],
         "time": booking_table[0]["time"],
+        "date_display": _format_date_human(booked_date),
+        "time_display": _format_time_human(booked_time),
         "party_size": booking_table[0]["party_size"],
-        "status": status
+        "status": status,
+        "status_message": STATUS_MESSAGES[status],
     }
 
 
@@ -175,14 +252,20 @@ def check_booking(booking_id: int):
     current_status = get_booking_status(booking_id)
 
     if current_status:
+        booking_date = date.fromisoformat(current_status[0]["date"])
+        booking_time = time.fromisoformat(current_status[0]["time"])
+        total_time = datetime.fromisoformat(current_status[0]["occupancy_end_time"]) - datetime.combine(booking_date, booking_time)
         response = {
             "session_id": current_status[0]["session_id"],
             "status": current_status[0]["confirmed_declined"],
             "party": current_status[0]["party_size"],
-            "date": date.fromisoformat(current_status[0]["date"]),
-            "time": time.fromisoformat(current_status[0]["time"]),
+            "date": booking_date,
+            "time": booking_time,
+            "date_display": _format_date_human(booking_date),
+            "time_display": _format_time_human(booking_time),
             "allergy_information": current_status[0]["allergy_info"],
-            "total_time": datetime.fromisoformat(current_status[0]["occupancy_end_time"]) - datetime.combine(date.fromisoformat(current_status[0]["date"]), time.fromisoformat(current_status[0]["time"]))
+            "total_time": total_time,
+            "total_time_display": _format_duration_human(total_time),
         }
         return response
     else:

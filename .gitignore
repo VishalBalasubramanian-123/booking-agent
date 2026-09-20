@@ -22,7 +22,8 @@ idea.md
 
 # Lambda deploy scratch (packaged locally, not source)
 build/
+build_scheduler/
 *.zip
 trust-policy.json
 bedrock-policy.json
-response.json
+response*.json
