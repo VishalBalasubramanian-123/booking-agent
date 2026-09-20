@@ -133,6 +133,10 @@ def create_session():
     created_session = supabase.table("session").insert({"customer_id": None}).execute().data
     return created_session
 
+def update_session_customer(session_id, customer_id):
+    updated_session = supabase.table("session").update({"customer_id": customer_id}).eq("session_id", session_id).execute().data
+    return updated_session
+
 def insert_escalation(booking_id, session_id, bucket):
     escalation = supabase.table("escalation").insert({"reservation_id": booking_id, "session_id": session_id, "bucket": bucket}).execute().data
     return escalation

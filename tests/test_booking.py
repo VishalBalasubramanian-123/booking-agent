@@ -111,10 +111,11 @@ def test_check_availability_when_maintanence_window_available():
 ]):
         result = check_availability(date(2026, 8, 28), time(19, 0), party_size=2)
     assert result == [{
-        "table": 5, 
-        "available": False, 
-        "reason": "deep cleaning", 
-        "window": [datetime.fromisoformat("2026-08-28T18:30:00"), datetime.fromisoformat("2026-08-28T20:00:00")]
+        "table": 5,
+        "available": False,
+        "reason": "deep cleaning",
+        "window": [datetime.fromisoformat("2026-08-28T18:30:00"), datetime.fromisoformat("2026-08-28T20:00:00")],
+        "window_display": "6:30 PM to 8:00 PM",
         }]
 
 def test_check_availability_when_not_conflicting():
@@ -126,7 +127,14 @@ def test_check_availability_when_not_conflicting():
     patch("tools_lambda.tools.booking.get_tables", return_value=[{"table_id": 3, "table_number": 5}]), \
     patch("tools_lambda.tools.booking.get_maintenance_window", return_value=[]):
         result = check_availability(date(2026, 8, 28), time(20, 0), party_size=2)
-    assert result == [{"table": 5, "available": True, "date": date.fromisoformat("2026-08-28"), "time": time.fromisoformat("20:00:00")}]
+    assert result == [{
+        "table": 5,
+        "available": True,
+        "date": date.fromisoformat("2026-08-28"),
+        "time": time.fromisoformat("20:00:00"),
+        "date_display": "Friday, August 28, 2026",
+        "time_display": "8:00 PM",
+    }]
 
 def test_check_availability_when_conflicting():
     with patch("tools_lambda.tools.booking.get_tables", return_value=[{"table_id": 3, "table_number": 5}]), \
@@ -138,7 +146,12 @@ def test_check_availability_when_conflicting():
                     }]), \
     patch("tools_lambda.tools.booking.get_closing_time", return_value=datetime.fromisoformat("2026-08-28T23:00:00")):
         result = check_availability(date(2026, 8, 28), time(19, 0), party_size=2)
-    assert result == [{"table": 5, "available": False, "next_available_time": datetime.fromisoformat("2026-08-28T20:00:00")}]
+    assert result == [{
+        "table": 5,
+        "available": False,
+        "next_available_time": datetime.fromisoformat("2026-08-28T20:00:00"),
+        "next_available_time_display": "8:00 PM",
+    }]
 
 
 
@@ -170,8 +183,8 @@ def test_check_availability_when_alternatives_found_next_two_days():
         "table": 5,
         "available": False,
         "alternatives": [
-            (date(2026, 8, 29), datetime.fromisoformat("2026-08-29T21:00:00")),
-            (date(2026, 8, 30), datetime.fromisoformat("2026-08-30T21:00:00")),
+            {"date": date(2026, 8, 29), "time": datetime.fromisoformat("2026-08-29T21:00:00"), "display": "Saturday, August 29, 2026 at 9:00 PM"},
+            {"date": date(2026, 8, 30), "time": datetime.fromisoformat("2026-08-30T21:00:00"), "display": "Sunday, August 30, 2026 at 9:00 PM"},
         ],
     }]
 
@@ -250,12 +263,15 @@ def test_check_availability_when_table_given():
             "available": True,
             "date": date(2026, 8, 28),
             "time": time(21, 0),
+            "date_display": "Friday, August 28, 2026",
+            "time_display": "9:00 PM",
         },
         "alternative_tables": [
             {
                 "table": 8,
                 "available": False,
                 "next_available_time": datetime.fromisoformat("2026-08-28T22:00:00"),
+                "next_available_time_display": "10:00 PM",
             },
         ],
     }]
@@ -281,16 +297,37 @@ def test_reserve_table_when_table_not_found():
     assert result == "Please choose one of the available tables first."
 
 
+def test_reserve_table_rejects_when_table_now_conflicts():
+    # Guards against a stale check_availability snapshot: another guest, in
+    # another session, may have booked the same table/slot in the meantime.
+    with patch("tools_lambda.tools.booking.get_table_id", return_value=3), \
+    patch("tools_lambda.tools.booking.get_existing_bookings", return_value=[{
+        "table_number": 5,
+        "time": datetime(2026, 8, 28, 19, 0),
+        "occupancy_end_time": datetime(2026, 8, 28, 20, 30),
+    }]), \
+    patch("tools_lambda.tools.booking.get_customer") as mock_get_customer, \
+    patch("tools_lambda.tools.booking.book_table") as mock_book_table:
+        result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="", phone="1234567890", email=None, table_number=5, session_id=1)
+
+    assert result == "Table 5 is no longer available at that time — please check availability again."
+    mock_get_customer.assert_not_called()
+    mock_book_table.assert_not_called()
+
+
 def test_reserve_table_new_customer_no_allergy_confirms():
     with patch("tools_lambda.tools.booking.get_table_id", return_value=3), \
+    patch("tools_lambda.tools.booking.get_existing_bookings", return_value=[]), \
     patch("tools_lambda.tools.booking.get_customer", return_value=[]), \
-    patch("tools_lambda.tools.booking.insert_customer") as mock_insert_customer, \
+    patch("tools_lambda.tools.booking.insert_customer", return_value=[{"customer_id": 99}]) as mock_insert_customer, \
+    patch("tools_lambda.tools.booking.update_session_customer") as mock_update_session_customer, \
     patch("tools_lambda.tools.booking.book_table", return_value=[{"reservation_id": 10, "date": "2026-08-28", "time": "19:00:00", "party_size": 2}]), \
     patch("tools_lambda.tools.booking.link_reservation_to_table") as mock_link, \
     patch("tools_lambda.tools.booking.update_status", return_value=[{"confirmed_declined": "confirmed"}]) as mock_update_status:
         result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="", phone="1234567890", email=None, table_number=5, session_id=1)
 
     mock_insert_customer.assert_called_once_with("John", "1234567890", None)
+    mock_update_session_customer.assert_called_once_with(1, 99)
     mock_link.assert_called_once_with(10, 3)
     mock_update_status.assert_called_once_with(1, 10, "confirmed", "No allergy or safety concern noted")
     assert result == {
@@ -298,39 +335,51 @@ def test_reserve_table_new_customer_no_allergy_confirms():
         "reservation_id": 10,
         "date": "2026-08-28",
         "time": "19:00:00",
+        "date_display": "Friday, August 28, 2026",
+        "time_display": "7:00 PM",
         "party_size": 2,
         "status": "confirmed",
+        "status_message": "Your reservation is confirmed!",
     }
 
 
 def test_reserve_table_existing_customer_skips_insert():
     with patch("tools_lambda.tools.booking.get_table_id", return_value=3), \
+    patch("tools_lambda.tools.booking.get_existing_bookings", return_value=[]), \
     patch("tools_lambda.tools.booking.get_customer", return_value=[{"customer_id": 1, "name": "John", "phone": "1234567890"}]), \
     patch("tools_lambda.tools.booking.insert_customer") as mock_insert_customer, \
+    patch("tools_lambda.tools.booking.update_session_customer") as mock_update_session_customer, \
     patch("tools_lambda.tools.booking.book_table", return_value=[{"reservation_id": 10, "date": "2026-08-28", "time": "19:00:00", "party_size": 2}]), \
     patch("tools_lambda.tools.booking.link_reservation_to_table"), \
     patch("tools_lambda.tools.booking.update_status", return_value=[{"confirmed_declined": "confirmed"}]):
         reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="", phone="1234567890", email=None, table_number=5, session_id=1)
 
     mock_insert_customer.assert_not_called()
+    mock_update_session_customer.assert_called_once_with(1, 1)
 
 
 def test_reserve_table_with_allergy_goes_pending():
     with patch("tools_lambda.tools.booking.get_table_id", return_value=3), \
+    patch("tools_lambda.tools.booking.get_existing_bookings", return_value=[]), \
     patch("tools_lambda.tools.booking.get_customer", return_value=[{"customer_id": 1}]), \
+    patch("tools_lambda.tools.booking.update_session_customer") as mock_update_session_customer, \
     patch("tools_lambda.tools.booking.book_table", return_value=[{"reservation_id": 10, "date": "2026-08-28", "time": "19:00:00", "party_size": 2}]), \
     patch("tools_lambda.tools.booking.link_reservation_to_table"), \
     patch("tools_lambda.tools.booking.verification_to_human") as mock_verification:
         result = reserve_table(date(2026, 8, 28), time(19, 0), party_size=2, name="John", allergy_info="peanut allergy", phone="1234567890", email=None, table_number=5, session_id=1)
 
     mock_verification.assert_called_once_with(10, 1, "verification")
+    mock_update_session_customer.assert_called_once_with(1, 1)
     assert result == {
         "session_id": 1,
         "reservation_id": 10,
         "date": "2026-08-28",
         "time": "19:00:00",
+        "date_display": "Friday, August 28, 2026",
+        "time_display": "7:00 PM",
         "party_size": 2,
         "status": "pending",
+        "status_message": "Your reservation is pending — we've noted the allergy/safety information you shared, and our team will review it before confirming. We'll let you know as soon as it's decided.",
     }
 
 
@@ -343,8 +392,11 @@ def test_check_booking_when_records_present():
             "party": 4,
             "date": date.fromisoformat("2026-08-28"),
             "time": time.fromisoformat("12:00:00"),
+            "date_display": "Friday, August 28, 2026",
+            "time_display": "12:00 PM",
             "allergy_information": "Peanut allergy",
-            "total_time": datetime.fromisoformat("2026-08-28T13:30:00") - datetime.combine(date.fromisoformat("2026-08-28"), time.fromisoformat("12:00:00"))
+            "total_time": datetime.fromisoformat("2026-08-28T13:30:00") - datetime.combine(date.fromisoformat("2026-08-28"), time.fromisoformat("12:00:00")),
+            "total_time_display": "1 hour 30 minutes",
         }
 
 def test_check_booking_when_no_records():
