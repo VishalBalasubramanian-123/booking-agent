@@ -2,6 +2,7 @@
 import json
 import threading
 import time
+from datetime import date
 from pathlib import Path
 import boto3
 from dotenv import load_dotenv
@@ -17,26 +18,35 @@ load_dotenv()
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system_prompt.md"
 SYSTEM_PROMPT_TEMPLATE = SYSTEM_PROMPT_PATH.read_text()
 
-# model = BedrockModel(model_id="anthropic.claude-haiku-4-5-20251001-v1:0")amazon.nova-2-lite-v1:0
-model = BedrockModel(model_id="us.amazon.nova-2-lite-v1:0")
+model = BedrockModel(model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0")
+# model = BedrockModel(model_id="us.amazon.nova-2-lite-v1:0")
 
 _lambda_client = boto3.client("lambda")
 
 
 def _invoke_tool(action, **parameters):
     """Invoke the tools Lambda, which dispatches to tools_lambda/tools/ by action name."""
+    print(f"\n[TOOL CALL] {action} <- {parameters}")
     response = _lambda_client.invoke(
         FunctionName=TOOLS_LAMBDA_NAME,
         Payload=json.dumps({"action": action, "parameters": parameters}).encode(),
     )
-    return json.loads(response["Payload"].read())
+    result = json.loads(response["Payload"].read())
+    print(f"[TOOL RESULT] {action} -> {result}")
+    return result
 
 
 # Restaurant name is fetched once at startup (not an LLM-callable tool — this is
 # deployment context, not something the agent should ever need to ask itself for
 # mid-conversation) and baked into the system prompt before the Agent is built.
 _restaurant_name = _invoke_tool("get_restaurant_name")
-SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(restaurant_name=_restaurant_name)
+
+# Today's date, same reasoning — the model has no access to the real system
+# clock on its own, so without this it has no way to resolve a guest-given
+# date that omits a year (see error_log.md #21).
+_today = date.today().strftime("%A, %B %-d, %Y")
+
+SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(restaurant_name=_restaurant_name, today=_today)
 
 # One session per CLI run, same reasoning as _restaurant_name above — not
 # something the agent should ever ask itself for mid-conversation.
@@ -68,6 +78,11 @@ def _watch_verification(reservation_id):
 def check_availability(date: str, time: str, party_size: int, table_number: int | None = None, stay_minutes: int | None = None) -> dict:
     """Check whether a table is available for a given date, time, and party size.
 
+    The response may include pre-formatted "*_display" fields (e.g.
+    next_available_time_display, date_display, alternatives[].display) —
+    always use those exact strings when telling the guest a date/time.
+    Never compute or reformat a date/time yourself from the raw fields.
+
     Args:
         date: Reservation date, YYYY-MM-DD.
         time: Reservation time, HH:MM (24h).
@@ -91,6 +106,13 @@ def reserve_table(
     table_number: int | None = None,
 ) -> dict:
     """Reserve a table for a guest.
+
+    The response includes a "status_message" field — use it verbatim as your
+    opening/confirmation sentence. Do not independently compose your own
+    "confirmed"/"success" framing based on the tool call having succeeded;
+    the reservation can come back "pending" (awaiting review) even when the
+    call itself completes without error, and status_message already reflects
+    that correctly.
 
     Args:
         date: Reservation date, YYYY-MM-DD.
@@ -122,6 +144,11 @@ def reserve_table(
 @tool
 def check_booking(booking_id: int) -> dict:
     """Look up an existing booking by its ID.
+
+    The response includes pre-formatted "*_display" fields (date_display,
+    time_display, total_time_display) — always use those exact strings when
+    telling the guest a date/time/duration. Never compute or reformat one
+    yourself from the raw fields.
 
     Args:
         booking_id: The booking's unique identifier.
@@ -170,10 +197,12 @@ if __name__ == "__main__":
     session = PromptSession()
     with patch_stdout():
         while True:
-            user_input = session.prompt("You: ")
+            user_input = session.prompt(" \n You: ")
+            print(f" \n [GUEST INPUT] {user_input!r} \n")
             _invoke_tool("insert_conversation", session_id=_session_id, message=user_input, by_who="user")
             if user_input.strip().lower() == "exit":
                 break
             response = agent(user_input)
+            print(f"\n [MODEL REPLY] {str(response)!r} \n")
             _invoke_tool("insert_conversation", session_id=_session_id, message=str(response), by_who="assistant")
             print(response)
