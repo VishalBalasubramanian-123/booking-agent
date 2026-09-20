@@ -5,7 +5,7 @@ import boto3
 
 bedrock = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
 
-THRESHOLD = 0.75
+THRESHOLD = 0.50
 
 model_id = "amazon.titan-embed-text-v1"
 
@@ -14,9 +14,7 @@ def check_KB(topic: str) -> list[dict]:
     
     # Prepare the input payload
     payload = {
-        "inputText": topic,
-        "dimensions": 1536,
-        "normalize": True
+        "inputText": topic
     }
     
     # Invoke the model
@@ -44,9 +42,7 @@ def update_KB() -> list[dict]:
     for cont in range(len(kb_content)):
         # Prepare the input payload
         payload = {
-            "inputText": kb_content[cont]["content"],
-            "dimensions": 1536,
-            "normalize": True
+            "inputText": kb_content[cont]["content"]
         }
 
         # Invoke the model
