@@ -87,3 +87,20 @@ Issues found and resolved, across a few iterations:
   ```
   so the guest doesn't have to separately ask `check_booking` to see what they already have. Table number intentionally left out of this response for now (would need an extra join) — not essential, can add later.
 - Still open / not yet decided: customer lookup key (phone? email? some combination? — flagged as open in `booking_flow_design.md` too), whether `reserve_table` re-verifies availability itself before inserting (race condition since time may have passed since the guest's original `check_availability` call), hold TTL sourcing now that bucket 3 is deferred (bucket 1 = no hold, straight to `confirmed`; bucket 2 = 5-minute hold — the 15-20 minute bucket-3 window is moot for now).
+
+---
+
+## Lambda response marshalling — `date`/`time`/`datetime` not JSON-serializable (found + fixed 2026-09-19)
+
+**Symptom:** first real end-to-end test through the CLI (`python -m agent.agent`, real deployed Lambda) — guest asked to book a table, the model apologized for "a technical issue" and fell back to asking unrelated clarifying questions instead of returning availability. Reproduced directly with `aws lambda invoke` against `check_availability`:
+```
+{"errorMessage": "Unable to marshal response: Object of type date is not JSON serializable", "errorType": "Runtime.MarshalError", ...}
+```
+
+**Root cause:** business-logic functions (`check_availability` especially) build their response dicts using real Python `date`/`time`/`datetime` objects (e.g. `{"table": 5, "available": True, "date": date(...), "time": time(...)}`) — fine for the mocked unit tests, which never actually serialize anything, but AWS Lambda auto-JSON-encodes whatever `handler()` returns before sending the response back, and plain `date`/`time`/`datetime`/`timedelta` objects aren't JSON-serializable. This is the same underlying class of bug as the earlier `book_table` insert-side fix (raw date/time objects not surviving a serialization boundary) — just the *response* side instead of the *request* side, and not caught at the time because `reserve_table`/`check_availability` had no test that actually exercised real Lambda marshalling (only mocked unit tests).
+
+**Fix:** `tools_lambda/handler.py` — `_json_safe(value)`, a recursive converter applied once, as the single choke point right before `handler()` returns (`date`/`time`/`datetime` → `.isoformat()`, `timedelta` → `.total_seconds()`, recurses through dicts/lists/tuples, everything else passed through unchanged). Chosen over having every business-logic function remember to serialize its own return values — one boundary conversion instead of N places that could each forget it. Tests added in `tests/test_handler.py` (conversion, recursion, pass-through, and an end-to-end `handler()` test).
+
+Verified against the real deployed Lambda after redeploying: `check_availability("2026-10-05", "11:00", 4)` now returns clean ISO-string dates/times instead of erroring.
+
+**Near-miss worth recording:** this exact fix was written once already (apparently independently), then reverted at the time on the assumption it might be unnecessary/unreviewed churn, before the live end-to-end test proved it was a real, necessary bug fix — re-written and restored. Lesson: a plausible-looking, well-tested change touching a serialization boundary is worth verifying against the real failure mode before reverting it, not just against "does it look risky."

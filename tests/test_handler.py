@@ -1,9 +1,10 @@
 # Tests for tools_lambda/handler.py's action dispatch.
+from datetime import date, time, datetime, timedelta
 from unittest.mock import patch, Mock
 
 import pytest
 
-from tools_lambda.handler import handler
+from tools_lambda.handler import handler, _json_safe
 
 
 def test_handler_dispatches_to_registered_action_with_parameters():
@@ -36,3 +37,39 @@ def test_handler_every_registered_action_is_a_real_attribute():
     assert ACTIONS  # non-empty
     for action_name, fn in ACTIONS.items():
         assert callable(fn), f"{action_name} is not callable"
+
+
+def test_json_safe_converts_date_time_datetime():
+    assert _json_safe(date(2026, 8, 28)) == "2026-08-28"
+    assert _json_safe(time(19, 0)) == "19:00:00"
+    assert _json_safe(datetime(2026, 8, 28, 19, 0)) == "2026-08-28T19:00:00"
+
+
+def test_json_safe_converts_timedelta_to_seconds():
+    assert _json_safe(timedelta(minutes=90)) == 5400.0
+
+
+def test_json_safe_recurses_into_nested_dicts_and_lists():
+    value = {
+        "table": 5,
+        "available": True,
+        "date": date(2026, 8, 28),
+        "alternatives": [(date(2026, 8, 29), datetime(2026, 8, 29, 21, 0))],
+    }
+    assert _json_safe(value) == {
+        "table": 5,
+        "available": True,
+        "date": "2026-08-28",
+        "alternatives": [["2026-08-29", "2026-08-29T21:00:00"]],
+    }
+
+
+def test_json_safe_leaves_plain_values_untouched():
+    assert _json_safe({"a": 1, "b": "text", "c": None, "d": True}) == {"a": 1, "b": "text", "c": None, "d": True}
+
+
+def test_handler_applies_json_safe_to_action_result():
+    mock_action = Mock(return_value={"date": date(2026, 8, 28), "total_time": timedelta(minutes=90)})
+    with patch.dict("tools_lambda.handler.ACTIONS", {"check_availability": mock_action}):
+        result = handler({"action": "check_availability", "parameters": {}}, None)
+    assert result == {"date": "2026-08-28", "total_time": 5400.0}
